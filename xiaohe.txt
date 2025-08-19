@@ -1,8 +1,8 @@
-虽然我也不知道写什么，就随便测一下
-阿松i大家撒罗尼贷记卡四年
-sadsad
-asdgfuiasgduifsauidfhi虽然我也不知道写什么，就随便测一下
-package com.sdmc.keyburn;
+虽然我也不知sahdfhd道写什么，就随便测一下
+阿松i大家撒罗尼贷记asdasd卡四年
+sadsadsdasd
+asdgfuiasgdsadasduifsauidfhi虽然我也不知道写什么，就随便测一下
+package com.sdmc.asdasdakeyburn;
 
 import static com.sdmc.keyburn.bean.KeyInfo.BURN_ALL;
 import static com.sdmc.keyburn.receiver.USBReceiverConstant.BURN_RESULT;
