@@ -115,7 +115,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
         // 4) 绑定 MTK 服务（9660 必需；9630 无需）
         initService();
-
+45sa4df564sa6df4
         // 5) 业务初始化
         deviceSn = getDeviceSN();
         if (deviceSn == null || deviceSn.isEmpty()) {
