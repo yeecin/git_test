@@ -1,1 +1,689 @@
+虽然我也不知道写什么，就随便测一下
+阿松i大家撒罗尼贷记卡四年
+sadsad
 asdgfuiasgduifsauidfhi虽然我也不知道写什么，就随便测一下
+package com.sdmc.keyburn;
+
+import static com.sdmc.keyburn.bean.KeyInfo.BURN_ALL;
+import static com.sdmc.keyburn.receiver.USBReceiverConstant.BURN_RESULT;
+import static com.sdmc.keyburn.receiver.USBReceiverConstant.CHECK_RESULT;
+import static com.sdmc.keyburn.receiver.USBReceiverConstant.DIALOF_DISMISS;
+import static com.sdmc.keyburn.receiver.USBReceiverConstant.DIALOF_SHOW;
+import static com.sdmc.keyburn.receiver.USBReceiverConstant.READ_USB_DEVICE;
+import static com.sdmc.keyburn.receiver.USBReceiverConstant.READ_USB_DEVICE_PERMISSION;
+import static com.sdmc.keyburn.receiver.USBReceiverConstant.START_BURN;
+
+import android.annotation.SuppressLint;
+import android.app.ProgressDialog;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.ServiceConnection;
+import android.graphics.Color;
+import android.hardware.usb.UsbManager;
+import android.os.AsyncTask;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Message;
+import android.provider.Settings;
+import android.util.Log;
+import android.view.View;
+import android.view.ViewPropertyAnimator;
+import android.widget.Button;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.RequiresApi;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.view.ViewCompat;
+
+import com.mediatek.extservice.IMtkUtilityService;
+import com.sdmc.keyburn.bean.KeyInfo;
+import com.sdmc.keyburn.platform.PlatformAdapter;
+import com.sdmc.keyburn.platform.PlatformKeyBurner;
+import com.sdmc.keyburn.receiver.USBMTPReceiver;
+import com.sdmc.keyburn.utils.PropertiesUtil;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.regex.Pattern;
+import android.media.MediaDrm;
+import android.media.UnsupportedSchemeException;
+import java.util.UUID;
+
+public class MainActivity extends AppCompatActivity implements View.OnClickListener {
+    private static final String TAG = "MainActivity";
+    public static final String PROVISION_KEY_ENC_OUTPUT_NAME = "extend.enc.output";
+    public static final String PROVISION_KEY_ENC_NAME = "extend.enc";
+    public static final String NEEDBURNKEYTAGNAMES = "need_burnKey_tagnames";
+
+    private String tag;
+    public static final int FACTORY_result_FAIL = 404;
+    public static final int FACTORY_result_SUCCESS = 200;
+    private TextView tvMac,tvResult;
+    private ScrollView scrollView;
+    private Button bt_burn_all,bt_check_status,bt_get_wv_system_id;
+    private ProgressDialog progressDialog;
+
+    private Context mContext;
+    private String deviceSn;
+    private boolean isSNExist = false;
+    private HashMap<String, KeyInfo> mSpecificKeyMap = new HashMap<>();
+    private String[] mNeedBurnKeyTagNames;
+    private StringBuffer mTagNamesForFactory = new StringBuffer();
+
+    private PlatformKeyBurner platformKeyBurner;
+    private String currentPlatformType;
+
+    private IMtkUtilityService mMtkUtilityService;
+    private USBMTPReceiver usbmtpReceiver;
+    private boolean mBound = false;
+
+
+    @RequiresApi(api = Build.VERSION_CODES.O)
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.acticvity_main);
+
+        mContext = this;
+
+        // 1) 平台初始化
+        initPlatform();
+
+        // 2) UI 初始化
+        initUI();
+        setButtonsEnabled(false);
+
+        // 3) 9630 可直接创建实例；9660 等服务连上再创建
+        if ("mt9630".equalsIgnoreCase(currentPlatformType)) {
+            tryCreateKeyBurner(null);
+        }
+
+        // 4) 绑定 MTK 服务（9660 必需；9630 无需）
+        initService();
+
+        // 5) 业务初始化
+        deviceSn = getDeviceSN();
+        if (deviceSn == null || deviceSn.isEmpty()) {
+            Toast.makeText(mContext, "获取设备序列号失败", Toast.LENGTH_LONG).show();
+            Log.e(TAG, "Device SN is empty");
+            return;
+        }
+        tvMac.setText(deviceSn);
+        Log.d(TAG, "Device SN: " + deviceSn + ", Platform: " + currentPlatformType);
+
+        registerUSBReceiver();
+
+        boolean result = Algorithm.aesDecrytFile(
+                mContext.getFilesDir() + "/" + PROVISION_KEY_ENC_OUTPUT_NAME, mContext);
+        Log.d(TAG, "密钥文件解密结果: " + result);
+    }
+    // 更新烧录结果
+    private void updateBurnResult(String result) {
+        TextView burnResultTextView = findViewById(R.id.tv_burn_result);
+        burnResultTextView.setText(result);
+    }
+
+    // 更新检查结果
+    private void updateCheckResult(String result) {
+        TextView checkResultTextView = findViewById(R.id.tv_check_result);
+        if (result.contains("失败")) {
+            checkResultTextView.setTextColor(Color.RED);
+        } else {
+            checkResultTextView.setTextColor(Color.BLACK);
+        }
+        checkResultTextView.setText(result);
+    }
+
+    private void initUI() {
+        tvMac = findViewById(R.id.tv_mc_content);
+        tvResult = findViewById(R.id.tv_result_content);
+        if (tvResult != null) tvResult.setTextColor(Color.BLACK);
+
+        scrollView = findViewById(R.id.scrollView);
+        bt_burn_all = findViewById(R.id.bt_burn_all);
+        bt_check_status = findViewById(R.id.bt_check_status);
+        bt_get_wv_system_id = findViewById(R.id.bt_get_wv_system_id);
+
+        bt_burn_all.setOnClickListener(this);
+        bt_check_status.setOnClickListener(this);
+        bt_get_wv_system_id.setOnClickListener(this);
+
+
+        if (scrollView != null) {
+            scrollView.setFocusable(false);
+            scrollView.setFocusableInTouchMode(false);
+            scrollView.setDescendantFocusability(ScrollView.FOCUS_BEFORE_DESCENDANTS);
+        }
+
+        bt_burn_all.setNextFocusRightId(R.id.bt_check_status);
+        bt_check_status.setNextFocusLeftId(R.id.bt_burn_all);
+        bt_check_status.setNextFocusRightId(R.id.bt_get_wv_system_id);
+        bt_get_wv_system_id.setNextFocusLeftId(R.id.bt_check_status);
+
+        applyTvFocusEffect(bt_burn_all, bt_check_status, bt_get_wv_system_id);
+        applyTvFocusEffect(bt_burn_all, bt_check_status);
+        bt_burn_all.post(bt_burn_all::requestFocus);
+
+        progressDialog = new ProgressDialog(mContext);
+        progressDialog.setIcon(R.mipmap.ic_launcher);
+        progressDialog.setTitle("处理中");
+        progressDialog.setMessage("正在加载U盘文件");
+        progressDialog.setProgressStyle(ProgressDialog.STYLE_SPINNER);
+    }
+
+    private void appendResultSafe(String text) {
+        if (tvResult == null) return;
+        tvResult.post(() -> {
+            tvResult.append(text);
+            tvResult.append("\n");
+            if (scrollView != null) {
+                scrollView.post(() -> scrollView.fullScroll(View.FOCUS_DOWN));
+            }
+        });
+    }
+
+    /** TV 焦点视觉效果：获得焦点放大+抬升，失焦恢复 */
+    private void applyTvFocusEffect(View... views) {
+        if (views == null) return;
+        for (View v : views) {
+            if (v == null) continue;
+            v.setFocusable(true);
+            v.setFocusableInTouchMode(true);
+            ViewCompat.setElevation(v, 2f);
+            v.setOnFocusChangeListener((view, hasFocus) -> {
+                float targetScale = hasFocus ? 1.06f : 1.0f;
+                float targetElevation = hasFocus ? 10f : 2f;
+                ViewPropertyAnimator animator = view.animate();
+                animator.scaleX(targetScale)
+                        .scaleY(targetScale)
+                        .setDuration(90)
+                        .withEndAction(() -> ViewCompat.setElevation(view, targetElevation))
+                        .start();
+            });
+        }
+    }
+
+    private void initPlatform() {
+        PlatformAdapter.init(this); // 读取 assets/platform_config.json
+        currentPlatformType = PlatformAdapter.getCurrentPlatformType();
+        Log.d(TAG, "当前平台类型: " + currentPlatformType);
+        String modelId = Build.MODEL;
+        tvResult = findViewById(R.id.tv_result_content);
+        if (tvResult != null) {
+            tvResult.setText("设备型号: " + modelId + "\n当前平台: " + currentPlatformType);
+        }
+    }
+
+    /** 绑定 MTK 服务；9660 必需，9630 可忽略 */
+    private void initService() {
+        Intent intent = new Intent();
+        intent.setAction("MtkUtilityService.remote");
+        intent.setPackage("com.mediatek.extservice");
+        boolean ok = bindService(intent, mtkUtilityServiceConnection, Context.BIND_AUTO_CREATE);
+        Log.d(TAG, "bindService implicit = " + ok);
+//        if (!ok) {
+//            Toast.makeText(this, "未找到 MTK 扩展服务，部分平台功能可能不可用", Toast.LENGTH_LONG).show();
+//        }
+    }
+
+    /** 根据当前平台尝试创建 KeyBurner，并控制按钮可用性 */
+    private void tryCreateKeyBurner(IMtkUtilityService service) {
+        try {
+            platformKeyBurner = PlatformAdapter.createKeyBurner(mContext, service);
+            Log.d(TAG, "createKeyBurner -> " + (platformKeyBurner == null ? "null" : platformKeyBurner.getClass().getSimpleName()));
+            setButtonsEnabled(platformKeyBurner != null);
+        } catch (Exception e) {
+            Log.e(TAG, "创建 KeyBurner 失败", e);
+            setButtonsEnabled(false);
+        }
+    }
+
+    private void setButtonsEnabled(boolean enabled) {
+        if (bt_burn_all != null) bt_burn_all.setEnabled(enabled);
+        if (bt_check_status != null) bt_check_status.setEnabled(enabled);
+    }
+
+    private final ServiceConnection mtkUtilityServiceConnection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            Log.d(TAG, "MtkUtilityService connected");
+            mMtkUtilityService = IMtkUtilityService.Stub.asInterface(service);
+            mBound = true;
+            tryCreateKeyBurner(mMtkUtilityService);
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            Log.d(TAG, "MtkUtilityService disconnected");
+            mMtkUtilityService = null;
+            platformKeyBurner = null;
+            mBound = false;
+            setButtonsEnabled(false);
+        }
+    };
+
+    @RequiresApi(api = Build.VERSION_CODES.O)
+    public String getDeviceSN() {
+        String serial = PropertiesUtil.getInstance().getProperties(PropertiesUtil.SN_PROP);
+        Log.d(TAG, "getDeviceSN: " + serial);
+        return serial != null ? serial : "";
+    }
+
+    @Override
+    public void onClick(View v) {
+        Log.d("yeecin", "platformKeyBurner: " + platformKeyBurner);
+        if (v != bt_get_wv_system_id && platformKeyBurner == null) { // 获取SystemID不需要burner
+            Toast.makeText(mContext, "平台初始化未完成，请稍后重试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (v == bt_burn_all) {
+            tag = BURN_ALL;
+            Log.d("yeecin", "开始一键烧录所有密钥");
+        } else if (v == bt_check_status) {
+            checkAllKeysStatus();
+            return;
+        } else if (v == bt_get_wv_system_id) { // 新增
+            getWidevineSystemId();
+            return;
+        }
+
+        // 触发USB设备读取
+        Intent intent = new Intent(READ_USB_DEVICE);
+        sendBroadcast(intent);
+    }
+    private void getWidevineSystemId() {
+        final UUID WIDEVINE_UUID = new UUID(0xEDEF8BA979D64ACEL, 0xA3C827DCD51D21EDL);
+        String systemIdInfo;
+        MediaDrm mediaDrm = null;
+        try {
+            mediaDrm = new MediaDrm(WIDEVINE_UUID);
+            byte[] systemId = mediaDrm.getPropertyByteArray(MediaDrm.PROPERTY_DEVICE_UNIQUE_ID);
+
+            // 将字节数组转换为十六进制字符串以便显示
+            StringBuilder sb = new StringBuilder();
+            for (byte b : systemId) {
+                sb.append(String.format("%02X", b));
+            }
+            systemIdInfo = "Widevine System ID: " + sb;
+            Log.d(TAG, systemIdInfo);
+        } catch (UnsupportedSchemeException e) {
+            systemIdInfo = "获取 Widevine System ID 失败: 设备不支持 Widevine。";
+            Log.e(TAG, "Failed to get Widevine System ID", e);
+        } catch (Exception e) {
+            systemIdInfo = "获取 Widevine System ID 异常: " + e.getMessage();
+            Log.e(TAG, "Failed to get Widevine System ID", e);
+        } finally {
+            if (mediaDrm != null) {
+                // 在 Android Q (API 29) 及以上版本，release() 已被废弃，应使用 close()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    mediaDrm.close();
+                } else {
+                    mediaDrm.release();
+                }
+            }
+        }
+        // 将结果显示在检测结果区域
+        updateCheckResult(systemIdInfo);
+    }
+
+    @SuppressLint("StaticFieldLeak")
+    private void burnUnifyKey(final String sn, String tag) {
+        new AsyncTask<Void, Void, Void>() {
+            @Override
+            protected Void doInBackground(Void... args) {
+                initKey(sn);
+                return null;
+            }
+
+            @Override
+            protected void onPostExecute(Void result) {
+                Log.d(TAG, "密钥映射大小: " + mSpecificKeyMap.size());
+
+                if (!isSNExist) {
+                    Toast.makeText(mContext, "序列号在密钥文件中不存在", Toast.LENGTH_LONG).show();
+                    Log.e(TAG, "SN not exist in key file");
+                    return;
+                }
+
+                if (tag.equals(BURN_ALL)) {
+                    burnAllKeys();
+                } else {
+                    burnSingleKey(tag);
+                }
+            }
+        }.execute();
+    }
+
+    private void burnAllKeys() {
+        Log.d(TAG, "开始批量烧录密钥, 平台类型: " + currentPlatformType);
+
+        if (mNeedBurnKeyTagNames == null) {
+            Log.e(TAG, "需要烧录的密钥列表为空");
+            return;
+        }
+
+        StringBuilder burnResultBuilder = new StringBuilder();
+        burnResultBuilder.append("\n=== 烧录结果 ===\n");
+
+        for (String keyTag : mNeedBurnKeyTagNames) {
+            Log.d(TAG, "烧录密钥类型: " + keyTag);
+            String result = burnSingleKey(keyTag);
+            burnResultBuilder.append(keyTag).append(": ").append(result).append("\n");
+        }
+
+        // 烧录完成后检查状态
+        Handler delayHandler = new Handler();
+        delayHandler.postDelayed(() -> {
+            updateBurnResult(burnResultBuilder.toString());
+            checkAllKeysStatus();
+            deleteEncFile();
+        }, 2000);
+    }
+
+    // 修改为返回结果字符串
+    private String burnSingleKey(String keyTag) {
+        Log.d(TAG, "烧录单个密钥: " + keyTag);
+
+        KeyInfo keyInfo = mSpecificKeyMap.get(keyTag);
+        if (keyInfo == null) {
+            Log.e(TAG, "未找到密钥信息: " + keyTag);
+            return "未找到密钥信息";
+        }
+
+        try {
+            platformKeyBurner.burnKey(keyTag, keyInfo);
+
+            Message message = new Message();
+            message.obj = keyTag + " 烧录成功";
+
+            message.what = BURN_RESULT;
+            handler.sendMessage(message);
+
+            Log.d(TAG, keyTag + " 烧录完成");
+            return "烧录成功";
+        } catch (Exception e) {
+            Log.e(TAG, "烧录失败: " + keyTag, e);
+
+            Message message = new Message();
+            message.obj = keyTag + " 烧录失败: " + e.getMessage();
+            message.what = BURN_RESULT;
+            handler.sendMessage(message);
+            return "烧录失败: " + e.getMessage();
+        }
+    }
+
+    /** 如果检测前还没加载密钥，尝试自动加载一次 */
+    private void ensureKeysLoaded() {
+        if (mNeedBurnKeyTagNames == null || mNeedBurnKeyTagNames.length == 0) {
+            Log.d(TAG, "ensureKeysLoaded: mNeedBurnKeyTagNames 为空，尝试 initKey(sn)");
+            initKey(deviceSn);
+        }
+    }
+
+    private void checkAllKeysStatus() {
+        Log.d(TAG, "开始检查所有密钥状态");
+
+        if (platformKeyBurner == null) {
+            Toast.makeText(mContext, "平台未初始化", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // 自动兜底加载
+        ensureKeysLoaded();
+        setTagNamesForFactory();
+
+        StringBuilder checkResult = new StringBuilder();
+        checkResult.append("\n=== 密钥检测结果 ===\n");
+
+        int factoryResult = FACTORY_result_SUCCESS;
+
+        if (mNeedBurnKeyTagNames == null || mNeedBurnKeyTagNames.length == 0) {
+            checkResult.append("未找到可检测的密钥项。请先插入U盘并执行烧录，或确认 extend.enc.output 是否存在。\n");
+        } else {
+            for (String keyTag : mNeedBurnKeyTagNames) {
+                try {
+                    boolean pass;
+                    String label;
+
+                    // 对 ESNID / HASHKEY 跳过检测，按写入成功处理，避免误判
+                    if (KeyInfo.ESNID.equals(keyTag) || KeyInfo.HASHKEY.equals(keyTag)) {
+                        pass = true;
+                        label = "跳过检测";
+                    } else {
+                        pass = platformKeyBurner.checkKeyValid(keyTag);
+                        label = pass ? "通过" : "失败";
+                    }
+
+                    checkResult.append(keyTag).append(": ").append(label).append("\n");
+                    Log.d(TAG, keyTag + " 检测结果: " + label);
+
+                    if (!pass) {
+                        factoryResult = FACTORY_result_FAIL;
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "检测密钥失败: " + keyTag, e);
+                    checkResult.append(keyTag).append(": 检测异常\n");
+                    factoryResult = FACTORY_result_FAIL;
+                }
+            }
+        }
+
+        Log.d(TAG, checkResult.toString());
+        appendResultSafe(checkResult.toString());
+
+        // 若不想重复，可注释掉消息分发
+//        Message message = new Message();
+//        message.obj = checkResult.toString();
+//        message.what = CHECK_RESULT;
+//        handler.sendMessage(message);
+
+        setResult(factoryResult);
+        updateCheckResult(checkResult.toString());
+
+        Log.d(TAG, "工厂测试结果: " + factoryResult);
+    }
+
+    private void setTagNamesForFactory() {
+        Log.d(TAG, "设置工厂测试密钥名称");
+        mTagNamesForFactory.setLength(0);
+
+        if (mNeedBurnKeyTagNames != null) {
+            for (String name : mNeedBurnKeyTagNames) {
+                mTagNamesForFactory.append(name).append(",");
+            }
+            Settings.Global.putString(getContentResolver(),
+                    NEEDBURNKEYTAGNAMES, mTagNamesForFactory.toString());
+        }
+
+        Log.d(TAG, "工厂测试密钥列表: " + mTagNamesForFactory);
+    }
+
+    private void deleteEncFile() {
+        String filePath = getFilesDir() + "/" + PROVISION_KEY_ENC_OUTPUT_NAME;
+        File file = new File(filePath);
+        if (file.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            file.delete();
+            Log.d(TAG, "删除加密文件: " + filePath);
+        }
+    }
+
+    private void initKey(String sn) {
+        Log.d(TAG, "初始化密钥, SN: " + sn);
+        isSNExist = false;
+
+        String filePath = getFilesDir() + "/" + PROVISION_KEY_ENC_OUTPUT_NAME;
+        File file = new File(filePath);
+
+        if (!file.exists()) {
+            Log.e(TAG, "密钥文件不存在: " + filePath);
+            return;
+        }
+
+        try {
+            BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(file)));
+
+            String header = br.readLine();
+            if (header == null) {
+                Log.e(TAG, "密钥文件头部为空");
+                br.close();
+                return;
+            }
+
+            String[] headers = header.split(",");
+
+            if (isNumeric(headers[headers.length - 1])) {
+                mNeedBurnKeyTagNames = new String[headers.length - 2];
+            } else {
+                mNeedBurnKeyTagNames = new String[headers.length - 1];
+            }
+
+            System.arraycopy(headers, 1, mNeedBurnKeyTagNames, 0, mNeedBurnKeyTagNames.length);
+
+            // 关键修复：确保 PLAYREADY_PRIV 在最前，避免顺序导致的失败
+            reorderKeyTagsForDependencies();
+
+            String line;
+            String snSpecificKeyInfo = null;
+
+            while ((line = br.readLine()) != null) {
+                String[] infos = line.split(",");
+
+                if (KeyInfo.MAC.equals(infos[0])) {
+                    infos = infos[1].split(";");
+                    if (sn.equalsIgnoreCase(infos[0])) {
+                        isSNExist = true;
+                        snSpecificKeyInfo = line;
+                    }
+                } else {
+                    KeyInfo key = Utils.extractData(line);
+                    mSpecificKeyMap.put(key.getTagName(), key);
+                }
+            }
+
+            if (snSpecificKeyInfo != null) {
+                String[] keyInfos = snSpecificKeyInfo.split(";");
+                for (int i = 0; i < keyInfos.length; i++) {
+                    KeyInfo info;
+                    if (i == 0) {
+                        info = new KeyInfo();
+                        String[] parts = keyInfos[i].split(",");
+                        info.setTagName(parts[0]);
+                        if (parts.length > 1) {
+                            info.setSha256Value(parts[1]);
+                        }
+                    } else {
+                        info = Utils.extractData(keyInfos[i]);
+                    }
+                    mSpecificKeyMap.put(info.getTagName(), info);
+                }
+            }
+
+            br.close();
+            Log.d(TAG, "密钥初始化完成, 总数: " + mSpecificKeyMap.size());
+
+        } catch (Exception e) {
+            Log.e(TAG, "初始化密钥失败", e);
+        }
+    }
+
+    /** 将 PLAYREADY_PRIV 移到最前，避免顺序依赖问题 */
+    private void reorderKeyTagsForDependencies() {
+        if (mNeedBurnKeyTagNames == null || mNeedBurnKeyTagNames.length == 0) return;
+        int privIdx = -1;
+        for (int i = 0; i < mNeedBurnKeyTagNames.length; i++) {
+            if (KeyInfo.PLAYREADY_PRIV.equals(mNeedBurnKeyTagNames[i])) {
+                privIdx = i;
+                break;
+            }
+        }
+        if (privIdx > 0) {
+            String[] arr = mNeedBurnKeyTagNames;
+            String priv = arr[privIdx];
+            System.arraycopy(arr, 0, arr, 1, privIdx);
+            arr[0] = priv;
+            Log.d(TAG, "已将 PLAYREADY_PRIV 移动到最前: " + Arrays.toString(arr));
+        }
+    }
+
+    private boolean isNumeric(String str) {
+        if (str == null || str.isEmpty()) {
+            return false;
+        }
+        Pattern pattern = Pattern.compile("[0-9]*");
+        return pattern.matcher(str).matches();
+    }
+
+    private final Handler handler = new Handler(new Handler.Callback() {
+        @Override
+        public boolean handleMessage(@NonNull Message msg) {
+            switch (msg.what) {
+                case START_BURN:
+                    burnUnifyKey(deviceSn, tag);
+                    break;
+                case BURN_RESULT:
+                    String burnResultText = String.valueOf(msg.obj);
+                    appendResultSafe(burnResultText);
+                    break;
+                case CHECK_RESULT:
+                    appendResultSafe(String.valueOf(msg.obj));
+                    break;
+                case DIALOF_SHOW:
+                    if (progressDialog != null && !progressDialog.isShowing()) progressDialog.show();
+                    break;
+                case DIALOF_DISMISS:
+                    if (progressDialog != null && progressDialog.isShowing()) progressDialog.dismiss();
+                    break;
+            }
+            return true;
+        }
+    });
+
+    private void registerUSBReceiver() {
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(READ_USB_DEVICE_PERMISSION);
+        filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
+        filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
+        filter.addAction(READ_USB_DEVICE);
+
+        usbmtpReceiver = new USBMTPReceiver(handler);
+        registerReceiver(usbmtpReceiver, filter);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+
+        if (usbmtpReceiver != null) {
+            unregisterReceiver(usbmtpReceiver);
+        }
+
+        if (mBound) {
+            unbindService(mtkUtilityServiceConnection);
+            mBound = false;
+        }
+    }
+
+    @Override
+    public void onBackPressed() {
+        Intent intent = new Intent();
+        intent.putExtra("hash", "123456789123");
+        setResult(100, intent);
+        finish();
+        super.onBackPressed();
+    }
+}
