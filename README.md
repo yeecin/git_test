@@ -95,8 +95,5 @@ If you have run out of energy or time for your project, put a note at the top of
 
 #
 # 鍙介噷鍜曞櫆璇翠粈涔堝憿锛屽疄楠屽紑濮嬶紒
-<<<<<<< HEAD
  #
  # 叽里咕噜说什么呢，实验开始！
-=======
->>>>>>> c4cc328529508a382a9af40af62b1849c6faae31
