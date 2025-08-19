@@ -1,1 +1,6 @@
+<<<<<<< HEAD
 sfsdfsdfs
+=======
+thie
+ maskldjsaldhasj
+>>>>>>> b31517c4af0c536da62f84540753ab7c2a77ebaf
