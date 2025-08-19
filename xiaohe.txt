@@ -508,7 +508,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             Settings.Global.putString(getContentResolver(),
                     NEEDBURNKEYTAGNAMES, mTagNamesForFactory.toString());
         }
-
+        sout.out("hello,world");
         Log.d(TAG, "工厂测试密钥列表: " + mTagNamesForFactory);
     }
 
